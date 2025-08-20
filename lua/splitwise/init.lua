@@ -15,7 +15,9 @@ local default_config = {
   ignore_winfixwidth = false,
 }
 
-local function get_config(user_config)
+local user_config = {}
+
+local function get_config()
   return vim.tbl_deep_extend("force", default_config, user_config or {})
 end
 
@@ -403,7 +405,8 @@ function M.move_down()
 end
 
 function M.setup(opts)
-  local cfg = get_config(opts)
+  user_config = opts or {}
+  local cfg = get_config()
   if cfg.create_default_keymaps then
     vim.keymap.set("n", "<C-h>", M.move_left, { noremap = true, silent = true, desc = "Splitwise: move left" })
     vim.keymap.set("n", "<C-l>", M.move_right, { noremap = true, silent = true, desc = "Splitwise: move right" })
