@@ -13,6 +13,9 @@ local default_config = {
   -- If true, allow horizontal resize even when current window has 'winfixwidth'
   -- Vertical resize still respects 'winfixheight'.
   ignore_winfixwidth = false,
+  -- Auto-resize focused window to golden ratio (~65%)
+  auto_resize_enabled = true,
+  auto_resize_ratio = 0.65,
 }
 
 local user_config = {}
@@ -351,6 +354,266 @@ local function wrap_to_opposite_edge(direction, cfg)
   return false
 end
 
+local function get_total_available_space(direction)
+  -- Get total available space in the current split layout
+  local tab = get_current_tabpage()
+  local wins = get_windows_in_tab(tab)
+  local cfg = get_config()
+  
+  if #wins <= 1 then
+    return 0 -- No point in resizing if there's only one window
+  end
+  
+  local total_width = 0
+  local total_height = 0
+  
+  for _, win in ipairs(wins) do
+    if not should_ignore_window(win, cfg) then
+      local _, _, height, width = get_win_bounds(win)
+      total_width = total_width + width
+      total_height = total_height + height
+    end
+  end
+  
+  if direction == "left" or direction == "right" then
+    return total_width
+  else
+    return total_height
+  end
+end
+
+local function find_parent_container_for_current_win(layout, current_win)
+  -- Find the immediate parent container (row or col) that contains the current window
+  local function search_node(node, path)
+    if node[1] == 'leaf' then
+      if node[2] == current_win then
+        return path
+      end
+      return nil
+    end
+    
+    local children = node[2]
+    for i, child in ipairs(children) do
+      local child_path = {}
+      for _, p in ipairs(path) do
+        table.insert(child_path, p)
+      end
+      table.insert(child_path, {node = node, child_index = i})
+      
+      local result = search_node(child, child_path)
+      if result then
+        return result
+      end
+    end
+    return nil
+  end
+  
+  return search_node(layout, {})
+end
+
+local function get_sibling_units_in_plane(direction)
+  -- Get the logical units that should be resized together based on the movement direction
+  local current_win = vim.api.nvim_get_current_win()
+  local layout = vim.fn.winlayout()
+  local cfg = get_config()
+  local is_horizontal = direction == "left" or direction == "right"
+  
+  local function get_unit_dimensions(node)
+    -- Returns the total width and height of a layout unit
+    if node[1] == 'leaf' then
+      local win = node[2]
+      if should_ignore_window(win, cfg) then
+        return 0, 0, {}
+      end
+      local _, _, height, width = get_win_bounds(win)
+      return width, height, {win}
+    end
+    
+    local children = node[2]
+    local node_type = node[1]
+    local total_width, total_height = 0, 0
+    local all_wins = {}
+    
+    if node_type == 'row' then
+      -- Side-by-side: widths add up, height is max
+      local max_height = 0
+      for _, child in ipairs(children) do
+        local child_width, child_height, child_wins = get_unit_dimensions(child)
+        total_width = total_width + child_width
+        max_height = math.max(max_height, child_height)
+        for _, w in ipairs(child_wins) do
+          table.insert(all_wins, w)
+        end
+      end
+      total_height = max_height
+    else -- 'col'
+      -- Stacked: heights add up, width is max
+      local max_width = 0
+      for _, child in ipairs(children) do
+        local child_width, child_height, child_wins = get_unit_dimensions(child)
+        total_height = total_height + child_height
+        max_width = math.max(max_width, child_width)
+        for _, w in ipairs(child_wins) do
+          table.insert(all_wins, w)
+        end
+      end
+      total_width = max_width
+    end
+    
+    return total_width, total_height, all_wins
+  end
+  
+  local function contains_current_win(wins)
+    for _, win in ipairs(wins) do
+      if win == current_win then
+        return true
+      end
+    end
+    return false
+  end
+  
+  -- Find the path to the current window
+  local path = find_parent_container_for_current_win(layout, current_win)
+  if not path or #path == 0 then
+    return {}
+  end
+  
+  -- Look for the appropriate parent container based on movement direction
+  local target_container = nil
+  
+  -- Walk up the path to find a container that splits in the correct direction
+  for i = #path, 1, -1 do
+    local container = path[i].node
+    local container_type = container[1]
+    
+    if (is_horizontal and container_type == 'row') or 
+       (not is_horizontal and container_type == 'col') then
+      target_container = container
+      break
+    end
+  end
+  
+  -- If no appropriate container found, try the immediate parent
+  if not target_container and #path > 0 then
+    target_container = path[#path].node
+  end
+  
+  -- If still no container, use the root layout
+  if not target_container then
+    target_container = layout
+  end
+  
+  -- Extract units from the target container
+  if target_container[1] == 'leaf' then
+    -- Single window case
+    local width, height, wins = get_unit_dimensions(target_container)
+    if #wins > 0 then
+      return {{
+        width = width,
+        height = height,
+        wins = wins,
+        is_current = true
+      }}
+    end
+  else
+    -- Multi-window container
+    local units = {}
+    local children = target_container[2]
+    
+    for _, child in ipairs(children) do
+      local width, height, wins = get_unit_dimensions(child)
+      if #wins > 0 then
+        table.insert(units, {
+          width = width,
+          height = height,
+          wins = wins,
+          is_current = contains_current_win(wins)
+        })
+      end
+    end
+    return units
+  end
+  
+  return {}
+end
+
+local function auto_resize_focused_window(direction, cfg)
+  if not cfg.auto_resize_enabled then
+    return
+  end
+  
+  local current_win = vim.api.nvim_get_current_win()
+  local units = get_sibling_units_in_plane(direction)
+  
+  -- Need at least 2 units to resize
+  if #units < 2 then
+    return
+  end
+  
+  -- Check if current window has resize restrictions
+  if not can_resize_current(direction, cfg) then
+    return
+  end
+  
+  local is_horizontal = direction == "left" or direction == "right"
+  local target_ratio = cfg.auto_resize_ratio or 0.65
+  
+  -- Calculate total space available among units and find current unit
+  local total_space = 0
+  local current_unit = nil
+  
+  for _, unit in ipairs(units) do
+    local size = is_horizontal and unit.width or unit.height
+    total_space = total_space + size
+    if unit.is_current then
+      current_unit = unit
+    end
+  end
+  
+  if total_space == 0 or not current_unit then
+    return
+  end
+  
+  local current_size = is_horizontal and current_unit.width or current_unit.height
+  
+  -- Calculate target size and change needed
+  local target_size = math.floor(total_space * target_ratio)
+  local size_change = target_size - current_size
+  
+  -- Only resize if it makes the window larger
+  if size_change <= 0 then
+    return
+  end
+  
+  -- For units with multiple windows, we need to resize all windows in the unit
+  -- But for simplicity, we'll resize the current window and let Neovim adjust the others
+  local resize_cmd
+  if is_horizontal then
+    resize_cmd = string.format("vertical resize %d", target_size)
+  else
+    resize_cmd = string.format("resize %d", target_size)
+  end
+  
+  -- Temporarily disable winfixwidth if needed
+  local disabled_fixwidth = false
+  if is_horizontal and cfg.ignore_winfixwidth then
+    local ok_get, fixwidth = pcall(vim.api.nvim_win_get_option, current_win, "winfixwidth")
+    if ok_get and fixwidth then
+      local ok_set = pcall(vim.api.nvim_win_set_option, current_win, "winfixwidth", false)
+      if ok_set then
+        disabled_fixwidth = true
+      end
+    end
+  end
+  
+  pcall(vim.cmd, resize_cmd)
+  
+  -- Restore winfixwidth if we disabled it
+  if disabled_fixwidth then
+    pcall(vim.api.nvim_win_set_option, current_win, "winfixwidth", true)
+  end
+end
+
 local function move(direction)
   local cfg = get_config()
 
@@ -358,6 +621,8 @@ local function move(direction)
   local neighbor = get_neighbor_window(direction, cfg)
   if neighbor then
     pcall(vim.api.nvim_set_current_win, neighbor)
+    -- Auto-resize the newly focused window
+    auto_resize_focused_window(direction, cfg)
     return
   end
 
@@ -373,6 +638,8 @@ local function move(direction)
 
   if can_create then
     open_split(direction, cfg)
+    -- Auto-resize the newly created and focused window
+    auto_resize_focused_window(direction, cfg)
     return
   end
 
@@ -384,7 +651,10 @@ local function move(direction)
 
   -- If cannot resize, optionally wrap
   if cfg.wrap_navigation then
-    wrap_to_opposite_edge(direction, cfg)
+    if wrap_to_opposite_edge(direction, cfg) then
+      -- Auto-resize the newly focused window from wrapping
+      auto_resize_focused_window(direction, cfg)
+    end
   end
 end
 

@@ -16,6 +16,10 @@ https://github.com/user-attachments/assets/95dce3f0-2261-448b-90d8-62b64bb8aa39
   - Rows limited per current column (`max_rows`)
   - New split is created on the side you moved toward and focus moves into it
 - Resize at edges when creation is disallowed (or max reached)
+- **Auto-resize focused windows** to golden ratio (~65%) on navigation
+  - Resizes in the same plane of movement (horizontal for left/right, vertical for up/down)
+  - Only resizes if it makes the focused window larger, never smaller
+  - Configurable ratio and can be disabled
 - Optional wrap-around navigation
 - Ignores floating windows and configurable filetypes/buftypes
 
@@ -99,6 +103,8 @@ require("splitwise").setup({
   ignore_buftypes = { "nofile", "terminal", "prompt" },
   new_split_opens_blank_buffer = false, -- duplicate current buffer by default
   ignore_winfixwidth = false,      -- allow resize even if window has 'winfixwidth'
+  auto_resize_enabled = true,      -- automatically resize focused window
+  auto_resize_ratio = 0.65,        -- target ratio for focused window (~65% golden ratio)
 })
 ```
 
@@ -110,6 +116,12 @@ require("splitwise").setup({
   - Up: `aboveleft split`
   - Down: `belowright split`
 - After auto-creating, focus moves into the new window.
+- **Auto-resize behavior** (when `auto_resize_enabled = true`):
+  - When navigating to a window, it automatically resizes to the configured ratio (default 65%)
+  - Resizing only happens in the movement plane: horizontal movement triggers horizontal resize, vertical movement triggers vertical resize
+  - Only resizes if it would make the focused window larger, never smaller
+  - Respects `winfixwidth` and `winfixheight` options (unless `ignore_winfixwidth = true`)
+  - Works with regular navigation, split creation, and wrap-around navigation
 - Column limits are enforced within your current row; row limits are enforced within your current column. This matches how most users think about adding space where they currently are.
 - When at/over limits, splitwise.nvim resizes the current window toward the edge using the steps above. If a window has `winfixheight`, resize is skipped vertically. If a window has `winfixwidth`, horizontal resize is skipped unless `ignore_winfixwidth = true`.
 - Floating windows and windows with ignored filetypes/buftypes are excluded from navigation/creation decisions.
