@@ -160,6 +160,9 @@ take on the same idea, particularly if you want Tmux integration. Splitwise (thi
 purely on Neovim windows, and combines splitting and resizing in the same motions/keys
 for simplicity and fewer total keybindings.
 
+I also recently discovered [focus.nvim](https://github.com/nvim-focus/focus.nvim), which I haven't
+tried but it looks like a very similar concept.
+
 ## Tips
 
 - Consider mapping the functions in terminal-mode or visual-mode to taste if you frequently move around while in those modes.
